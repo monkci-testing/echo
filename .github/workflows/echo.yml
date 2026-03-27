@@ -1,12 +1,5 @@
 name: Run Tests
-
 on:
-  push:
-    branches:
-      - master
-  pull_request:
-    branches:
-      - master
   workflow_dispatch:
 
 permissions:
@@ -19,29 +12,36 @@ env:
 jobs:
   test:
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        # Each major Go release is supported until there are two newer major releases. https://golang.org/doc/devel/release.html#policy
-        # Echo tests with last four major releases (unless there are pressing vulnerabilities)
-        # As we depend on `golang.org/x/` libraries which only support the last 2 Go releases, we could have situations when
-        # we derive from the last four major releases promise.
         go: ["1.25", "1.26"]
-    name: ${{ matrix.os }} @ Go ${{ matrix.go }}
-    runs-on: ${{ matrix.os }}
+        runner:
+          - monkci-ubuntu-24.04-4-3600iops
+          - ubuntu-latest
+        exclude:
+          # Custom runner is Linux-only — skip for macOS and Windows os variants
+          - runner: monkci-ubuntu-24.04-4-3600iops
+            os: macos-latest
+          - runner: monkci-ubuntu-24.04-4-3600iops
+            os: windows-latest
+          # Avoid duplicating ubuntu-latest os + ubuntu-latest runner (same machine)
+          - runner: ubuntu-latest
+            os: ubuntu-latest
+    name: ${{ matrix.os == 'ubuntu-latest' && matrix.runner || matrix.os }} @ Go ${{ matrix.go }}
+    runs-on: ${{ matrix.runner != 'ubuntu-latest' && matrix.runner || matrix.os }}
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v5
-
+        uses: actions/checkout@v4
       - name: Set up Go ${{ matrix.go }}
         uses: actions/setup-go@v5
         with:
           go-version: ${{ matrix.go }}
-
       - name: Run Tests
         run: go test -race --coverprofile=coverage.coverprofile --covermode=atomic ./...
-
       - name: Upload coverage to Codecov
-        if: success() && matrix.go == env.LATEST_GO_VERSION && matrix.os == 'ubuntu-latest'
+        # Upload only once — from the baseline ubuntu-latest runner, latest Go
+        if: success() && matrix.go == env.LATEST_GO_VERSION && matrix.os == 'ubuntu-latest' && matrix.runner == 'ubuntu-latest'
         uses: codecov/codecov-action@v5
         with:
           token:
@@ -49,38 +49,38 @@ jobs:
 
   benchmark:
     needs: test
-    name: Benchmark comparison
-    runs-on: ubuntu-latest
+    name: Benchmark comparison @ ${{ matrix.runner }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+          - monkci-ubuntu-24.04-4-3600iops
+          - ubuntu-latest
     steps:
       - name: Checkout Code (Previous)
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
         with:
           ref: ${{ github.base_ref }}
           path: previous
-
       - name: Checkout Code (New)
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
         with:
           path: new
-
-      - name: Set up Go ${{ matrix.go }}
+      - name: Set up Go ${{ env.LATEST_GO_VERSION }}
         uses: actions/setup-go@v5
         with:
           go-version: ${{ env.LATEST_GO_VERSION }}
-
       - name: Install Dependencies
         run: go install golang.org/x/perf/cmd/benchstat@latest
-
       - name: Run Benchmark (Previous)
         run: |
           cd previous
           go test -run="-" -bench=".*" -count=8 ./... > benchmark.txt
-
       - name: Run Benchmark (New)
         run: |
           cd new
           go test -run="-" -bench=".*" -count=8 ./... > benchmark.txt
-
       - name: Run Benchstat
         run: |
           benchstat previous/benchmark.txt new/benchmark.txt
